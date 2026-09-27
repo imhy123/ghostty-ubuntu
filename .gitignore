@@ -1,5 +1,5 @@
 # Ghostty source
-ghostty-*.tar.gz
+ghostty-*.tar.gz*
 ghostty-*.*.*/
 
 # Zig source

@@ -7,8 +7,30 @@ ENV DISTRO_VERSION=${DISTRO_VERSION}
 ARG DISTRO
 ENV DISTRO=${DISTRO}
 
+# APT mirror used inside the image. Leave empty to use the base image's own
+# sources. Handles Ubuntu (archive/ports/security) and Debian (deb.debian.org)
+# deb822 sources, as well as a classic sources.list. Example:
+#   --build-arg APT_MIRROR=http://mirrors.aliyun.com/debian \
+#   --build-arg APT_SECURITY_MIRROR=http://mirrors.aliyun.com/debian-security
+ARG APT_MIRROR=""
+ARG APT_SECURITY_MIRROR=""
+
 # Install Dependencies
-RUN DEBIAN_FRONTEND="noninteractive" apt-get -qq update && \
+RUN set -eux; \
+    if [ -n "$APT_MIRROR" ]; then \
+        for f in /etc/apt/sources.list /etc/apt/sources.list.d/*.sources; do \
+            [ -e "$f" ] || continue; \
+            # Security host first: on Debian it shares a prefix with the archive
+            # host, and running the archive sed first would mangle it.
+            if [ -n "$APT_SECURITY_MIRROR" ]; then \
+                sed -i -E "s#https?://(deb\.debian\.org/debian-security|security\.debian\.org/debian-security|security\.ubuntu\.com/ubuntu)#${APT_SECURITY_MIRROR}#g" "$f"; \
+            fi; \
+            sed -i -E "s#https?://(deb\.debian\.org/debian|archive\.ubuntu\.com/ubuntu|ports\.ubuntu\.com/ubuntu-ports)#${APT_MIRROR}#g" "$f"; \
+        done; \
+        grep -RhsE "^(URIs|deb)" /etc/apt/sources.list.d/ /etc/apt/sources.list 2>/dev/null || true; \
+    fi; \
+    export DEBIAN_FRONTEND="noninteractive"; \
+    apt-get -qq update && \
     apt-get -qq -y --no-install-recommends install \
     # Build Tools
     build-essential \
@@ -38,11 +60,18 @@ RUN DEBIAN_FRONTEND="noninteractive" apt-get -qq update && \
 
 # Install zig
 # https://ziglang.org/download/
+# ZIG_BASE_URL may point at a mirror of ziglang.org/download. The tarball is
+# still verified with minisign below, so a mirror can only ever serve the
+# genuine artifact.
 ARG ZIG_VERSION="0.14.1"
-RUN echo "https://ziglang.org/download/$ZIG_VERSION/zig-$(uname -m)-linux-$ZIG_VERSION.tar.xz"
-RUN wget -q "https://ziglang.org/download/$ZIG_VERSION/zig-$(uname -m)-linux-$ZIG_VERSION.tar.xz" && \
-    wget -q "https://ziglang.org/download/$ZIG_VERSION/zig-$(uname -m)-linux-$ZIG_VERSION.tar.xz.minisig" && \
-    minisign -Vm "zig-$(uname -m)-linux-$ZIG_VERSION.tar.xz" -P "RWSGOq2NVecA2UPNdBUZykf1CCb147pkmdtYxgb3Ti+JO/wCYvhbAb/U" && \
-    tar -xf "zig-$(uname -m)-linux-$ZIG_VERSION.tar.xz" -C /opt && \
-    rm zig-* && \
-    ln -s "/opt/zig-$(uname -m)-linux-$ZIG_VERSION/zig" /usr/local/bin/zig
+ARG ZIG_BASE_URL="https://ziglang.org/download"
+RUN set -eux; \
+    arch="$(uname -m)"; \
+    tarball="zig-$arch-linux-$ZIG_VERSION.tar.xz"; \
+    url="$ZIG_BASE_URL/$ZIG_VERSION/$tarball"; \
+    echo "$url"; \
+    wget -q "$url" "$url.minisig"; \
+    minisign -Vm "$tarball" -P "RWSGOq2NVecA2UPNdBUZykf1CCb147pkmdtYxgb3Ti+JO/wCYvhbAb/U"; \
+    tar -xf "$tarball" -C /opt; \
+    rm "$tarball" "$tarball.minisig"; \
+    ln -s "/opt/zig-$arch-linux-$ZIG_VERSION/zig" /usr/local/bin/zig

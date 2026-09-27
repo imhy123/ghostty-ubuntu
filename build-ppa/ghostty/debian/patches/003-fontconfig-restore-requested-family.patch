@@ -1,0 +1,88 @@
+Description: Restore the requested font family after fontconfig config substitution
+ Fontconfig configuration can prepend families ahead of the one that was
+ requested. conf.d/48-spacing.conf (before fontconfig 2.18.2 - e.g. Debian 13
+ ships 2.15) prepends the generic family "monospace" whenever the pattern
+ carries spacing=mono, and language rules such as Debian/Ubuntu's
+ fonts-noto-cjk 70-fonts-noto-cjk.conf prepend a CJK font with binding="strong"
+ for lang=zh-cn/zh-tw/zh-hk. Fontconfig then prefers those over the font the
+ user configured, so with LANG=zh_CN.UTF-8 ghostty ignores font-family
+ entirely: every cell is sized from Noto Sans Mono CJK (text looks cramped) and
+ `ghostty +show-face --string=M` reports the CJK font.
+ .
+ Ghostty adds the spacing hint to every pattern so that generic searches prefer
+ monospace faces (that is what the ghostty#1984 fix relies on), so rather than
+ dropping the hint we put the requested family back at the front of the family
+ list after substitution and keep the substituted families as fallbacks. This
+ matches what fontconfig >= 2.18.2 does itself (it adds to "genericfamily"
+ instead of "family" for spacing=mono).
+ .
+ Measured on Debian 13 / fontconfig 2.15.0 (zh_CN.UTF-8):
+   * configured family exists  -> that family (before: Noto Sans Mono CJK SC)
+   * configured family missing -> still a monospace fallback, as ghostty#1984
+     intends (before, with the hint dropped, it regresses to a proportional font)
+Origin: https://gitlab.freedesktop.org/fontconfig/fontconfig/-/work_items/539
+Bug: https://gitlab.freedesktop.org/fontconfig/fontconfig/-/commit/1ed41a70 (fixed in fontconfig 2.18.2)
+Forwarded: no (downstream workaround; drop once fontconfig >= 2.18.2 is the baseline)
+Last-Update: 2026-09-27
+diff --git i/src/font/discovery.zig w/src/font/discovery.zig
+index 1847693a6..1ae6f773f 100644
+--- i/src/font/discovery.zig
++++ w/src/font/discovery.zig
+@@ -266,14 +266,17 @@ pub const Fontconfig = struct {
+         alloc: Allocator,
+         desc: Descriptor,
+     ) !DiscoverIterator {
+-        _ = alloc;
+-
+         // Build our pattern that we'll search for
+         const pat = desc.toFcPattern();
+         errdefer pat.destroy();
+         assert(self.fc_config.substituteWithPat(pat, .pattern));
+         pat.defaultSubstitute();
+ 
++        // Configuration substitution can leave other families ahead of the
++        // one we requested, and fontconfig then prefers those. See
++        // restoreFamily.
++        if (desc.family) |family| try restoreFamily(alloc, pat, family);
++
+         // Search
+         const res = self.fc_config.fontSort(pat, false, null);
+         if (res.result != .match) return error.FontConfigFailed;
+@@ -299,6 +302,37 @@ pub const Fontconfig = struct {
+         return try self.discover(alloc, desc);
+     }
+ 
++    /// Fontconfig's configuration can prepend families ahead of the one we
++    /// requested (48-spacing.conf does it for spacing=mono before fontconfig
++    /// 2.18.2, language rules do it for their own language) and fontconfig then
++    /// prefers those over the requested family. Put the requested family back
++    /// at the front of the list; the families configuration added stay as
++    /// fallbacks. Fontconfig >= 2.18.2 avoids the problem by adding to
++    /// "genericfamily" instead of "family".
++    fn restoreFamily(
++        alloc: Allocator,
++        pat: *fontconfig.Pattern,
++        family: [:0]const u8,
++    ) !void {
++        // Pattern values point into the pattern, so copy the ones we keep
++        // before deleting the property.
++        var others: std.ArrayListUnmanaged([:0]u8) = .{};
++        defer {
++            for (others.items) |v| alloc.free(v);
++            others.deinit(alloc);
++        }
++
++        var i: u32 = 0;
++        while (pat.get(.family, i)) |v| : (i += 1) {
++            if (std.mem.eql(u8, v.string, family)) continue;
++            try others.append(alloc, try alloc.dupeZ(u8, v.string));
++        } else |_| {}
++
++        assert(pat.delete(.family));
++        assert(pat.add(.family, .{ .string = family }, false));
++        for (others.items) |v| assert(pat.add(.family, .{ .string = v }, true));
++    }
++
+     pub const DiscoverIterator = struct {
+         config: *fontconfig.Config,
+         pattern: *fontconfig.Pattern,
