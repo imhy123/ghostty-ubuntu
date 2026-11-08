@@ -1,8 +1,8 @@
 diff --git i/src/build/SharedDeps.zig w/src/build/SharedDeps.zig
-index 4877686c4..9bf298133 100644
+index 8f4e239..f19cb14 100644
 --- i/src/build/SharedDeps.zig
 +++ w/src/build/SharedDeps.zig
-@@ -251,7 +251,7 @@ pub fn add(
+@@ -242,7 +242,7 @@ pub fn add(
          );
  
          if (b.systemIntegrationOption("freetype", .{})) {

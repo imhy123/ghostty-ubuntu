@@ -7,7 +7,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # https://ghostty.org/docs/install/build
 GHOSTTY_VERSION="1.4.0"
 
-if [ "$1" == "tip" ]; then
+if [ "$1" = "tip" ]; then
   DEBIAN_SUFFIX="0~nightly"
   SOURCE_FILENAME="ghostty-source"
   SOURCE_URL="https://github.com/ghostty-org/ghostty/releases/download/tip/$SOURCE_FILENAME.tar.gz"
@@ -29,8 +29,8 @@ fi
 DISTRO=$(lsb_release -sc)
 
 echo "Fetch Ghostty Source"
-wget -q "$SOURCE_URL"
-wget -q "$MINISIG_URL"
+wget -q -O "$SOURCE_FILENAME.tar.gz" "$SOURCE_URL"
+wget -q -O "$SOURCE_FILENAME.tar.gz.minisig" "$MINISIG_URL"
 
 minisign -Vm "$SOURCE_FILENAME.tar.gz" -P RWQlAjJC23149WL2sEpT/l0QKy7hMIFhYdQOFy0Z7z7PbneUgvlsnYcV
 rm "$SOURCE_FILENAME.tar.gz.minisig"
@@ -39,23 +39,41 @@ tar -xzmf "$SOURCE_FILENAME.tar.gz"
 
 cd ghostty-*/
 
-if [ "$1" == "tip" ]; then
+if [ "$1" = "tip" ]; then
   GHOSTTY_VERSION=$(cat VERSION)
 fi
 
 echo "Fetch Zig Cache"
-ZIG_GLOBAL_CACHE_DIR=vendor-zig-cache ./nix/build-support/fetch-zig-cache.sh
+# Skip when the previous run already materialized the dependencies for this
+# Ghostty version: the source tree is re-extracted in place, so
+# vendor-zig-pkgs/ and vendor-zig-cache/ survive between runs, and fetching the
+# whole dependency set again takes minutes on a slow link.
+if [ -d vendor-zig-pkgs ] && [ -n "$(ls -A vendor-zig-pkgs)" ] && \
+   [ "$(cat vendor-zig-cache/.ghostty-version 2>/dev/null)" = "$GHOSTTY_VERSION" ]; then
+  echo "Reusing vendor-zig-pkgs/"
+else
+  ZIG_GLOBAL_CACHE_DIR=vendor-zig-cache ./nix/build-support/fetch-zig-cache.sh
+  mkdir -p vendor-zig-cache
+  printf '%s\n' "$GHOSTTY_VERSION" > vendor-zig-cache/.ghostty-version
+fi
 
 echo "Materialize --system pkg dir for zig 0.17 (see fetch-ghostty-orig-source.sh)"
 "$REPO_DIR/build-ppa/materialize-zig-pkgs.sh" "$PWD"
 
 echo "Copy debian/ packaging"
+# Remove first: cp -r into an existing ./debian would nest the copy as
+# ./debian/debian and leave the stale packaging (and patches!) in place.
+rm -rf ./debian
 cp -r "$REPO_DIR/build-ppa/ghostty/debian" ./debian
 
 # Apply source patches (dpkg-buildpackage -b skips dpkg-source, so quilt
 # patches from debian/patches/ aren't applied automatically).
-# Exit code 2 means patches are already applied, which is fine.
-QUILT_PATCHES=debian/patches quilt push -a || [ $? -eq 2 ]
+# Drop the quilt state first: the tar extraction above always leaves pristine
+# sources, but a rebuild over an existing tree still has .pc/applied-patches
+# from the previous run, and quilt would then report "all applied" (exit 2)
+# and the build would silently run WITHOUT the patches.
+rm -rf .pc
+QUILT_PATCHES=debian/patches quilt push -a
 
 # Apply distro-specific patches to debian/ packaging
 case "$DISTRO_VERSION" in
